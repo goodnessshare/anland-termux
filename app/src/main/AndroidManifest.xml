@@ -17,7 +17,7 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:enableOnBackInvokedCallback="false"
             android:exported="true"
-            android:screenOrientation="fullSensor"
+            android:screenOrientation="fullUser"
             android:launchMode="singleTask">
             <property
                 android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
