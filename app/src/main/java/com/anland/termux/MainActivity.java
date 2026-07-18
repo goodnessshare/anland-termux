@@ -256,8 +256,19 @@ public class MainActivity extends Activity
                         ? (float) customScreenWidth / viewWidth : 1.0f;
                 float sy = (customScreenHeight > 0 && viewHeight > 0)
                         ? (float) customScreenHeight / viewHeight : 1.0f;
-                float dx = event.getX() * sx * speed;
-                float dy = event.getY() * sy * speed;
+                // Captured deltas are raw counts with no system pointer
+                // acceleration (unlike the DeX cursor), so apply the same
+                // sigmoid ballistics VirtualTouchpad uses, at a boosted
+                // strength so slider=1.0 already feels close to the DeX
+                // cursor. Slow movements stay near 1:1 for precision.
+                float rawDx = event.getX();
+                float rawDy = event.getY();
+                float strength = 1.0f + speed * 3.0f;
+                float speedFactor = (float) Math.hypot(rawDx, rawDy) / 10.0f;
+                float accel = 1.0f + (strength - 1.0f)
+                        * (speedFactor / (1.0f + speedFactor));
+                float dx = rawDx * sx * speed * accel;
+                float dy = rawDy * sy * speed * accel;
                 capX = Math.max(0, Math.min(w, capX + dx));
                 capY = Math.max(0, Math.min(h, capY + dy));
                 Native.nativeSendMouseMotion(capX, capY, dx, dy);
