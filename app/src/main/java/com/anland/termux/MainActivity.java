@@ -247,8 +247,17 @@ public class MainActivity extends Activity
             int action = event.getActionMasked();
             if (action == MotionEvent.ACTION_MOVE
                     || action == MotionEvent.ACTION_HOVER_MOVE) {
-                float dx = event.getX();
-                float dy = event.getY();
+                // Captured deltas are in view pixels; scale to desktop
+                // resolution and apply the user's live "mouse sensitivity"
+                // setting (shared with touchpad mode, adjustable in-app).
+                float speed = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        .getFloat(KEY_MOUSE_ACCEL, 1.0f);
+                float sx = (customScreenWidth > 0 && viewWidth > 0)
+                        ? (float) customScreenWidth / viewWidth : 1.0f;
+                float sy = (customScreenHeight > 0 && viewHeight > 0)
+                        ? (float) customScreenHeight / viewHeight : 1.0f;
+                float dx = event.getX() * sx * speed;
+                float dy = event.getY() * sy * speed;
                 capX = Math.max(0, Math.min(w, capX + dx));
                 capY = Math.max(0, Math.min(h, capY + dy));
                 Native.nativeSendMouseMotion(capX, capY, dx, dy);
