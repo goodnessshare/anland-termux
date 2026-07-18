@@ -798,6 +798,35 @@ public class MainActivity extends Activity
         return super.onGenericMotionEvent(event);
     }
 
+    // DeX's mouse-as-touch conversion stamps SOURCE_TOUCHSCREEN on click
+    // events, so isMouseEvent()/handleMouseEvent never see them and capture
+    // never engages. Detect the physical device's real capabilities here at
+    // dispatch time instead: the InputDevice still reports SOURCE_MOUSE even
+    // when the event source is masked. First click from a real mouse engages
+    // pointer capture; the event still flows through normal handling so the
+    // click itself isn't lost.
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (!pointerCaptured && event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            android.view.InputDevice dev = event.getDevice();
+            boolean fromMouse = event.getButtonState() != 0
+                    || event.getToolType(event.getActionIndex()) == MotionEvent.TOOL_TYPE_MOUSE
+                    || (dev != null && dev.supportsSource(android.view.InputDevice.SOURCE_MOUSE));
+            if (fromMouse)
+                capturePointer();
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    // Keep our capture flag honest if the system grants/revokes capture
+    // asynchronously (capture requests are async and can be revoked without
+    // a window-focus change).
+    @Override
+    public void onPointerCaptureChanged(boolean hasCapture) {
+        super.onPointerCaptureChanged(hasCapture);
+        pointerCaptured = hasCapture;
+    }
+
     // Hardware keyboards (USB/Bluetooth/DeX) get routed into the hidden
     // SystemIME input view and swallowed before Activity.onKeyDown fires.
     // Grab them at dispatch time, before view-hierarchy delivery. Soft-IME
