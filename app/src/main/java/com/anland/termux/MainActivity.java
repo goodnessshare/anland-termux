@@ -47,6 +47,11 @@ public class MainActivity extends Activity
     private int customScreenHeight = 0;
     private int viewWidth = 0;
     private int viewHeight = 0;
+    // DeX/hardware-mouse pointer capture state. While captured, Android hands
+    // us raw relative mouse motion (SOURCE_MOUSE_RELATIVE), bypassing DeX's
+    // mouse-as-touch conversion which never forwards pure hover motion.
+    private boolean pointerCaptured = false;
+    private float capX = 0f, capY = 0f;
     private static final String KEY_BOUND_KEYCODE = "bound_keycode";
     private static final String KEY_SOCKET_PATH = "socket_path";
     private static final String KEY_USE_ROOT = "use_root";
@@ -122,6 +127,8 @@ public class MainActivity extends Activity
         if (hasFocus && clipboard != null) {
             clipboard.pushClipboard();
         }
+        if (!hasFocus)
+            releasePointer();
     }
 
     private void pushRefreshRate() {
@@ -227,6 +234,47 @@ public class MainActivity extends Activity
 
         setContentView(root);
         surfaceView.getHolder().addCallback(this);
+
+        // DeX / hardware mouse: while captured, events arrive here as
+        // SOURCE_MOUSE_RELATIVE with getX/getY holding per-event deltas.
+        // We keep a virtual absolute cursor position because the producer
+        // expects absolute coordinates alongside the deltas.
+        surfaceView.setFocusable(true);
+        surfaceView.setFocusableInTouchMode(true);
+        surfaceView.setOnCapturedPointerListener((view, event) -> {
+            float w = (customScreenWidth  > 0) ? customScreenWidth  : viewWidth;
+            float h = (customScreenHeight > 0) ? customScreenHeight : viewHeight;
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_MOVE
+                    || action == MotionEvent.ACTION_HOVER_MOVE) {
+                float dx = event.getX();
+                float dy = event.getY();
+                capX = Math.max(0, Math.min(w, capX + dx));
+                capY = Math.max(0, Math.min(h, capY + dy));
+                Native.nativeSendMouseMotion(capX, capY, dx, dy);
+                return true;
+            }
+            if (action == MotionEvent.ACTION_SCROLL) {
+                float vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
+                float hScroll = event.getAxisValue(MotionEvent.AXIS_HSCROLL);
+                if (vScroll != 0)
+                    Native.nativeSendMouseScroll(0, -vScroll * 10);
+                if (hScroll != 0)
+                    Native.nativeSendMouseScroll(1, hScroll * 10);
+                return true;
+            }
+            // Button changes surface as BUTTON_PRESS/RELEASE (and DOWN/UP);
+            // diff against the saved state exactly like handleMouseEvent does.
+            int currentBS = event.getButtonState();
+            for (int[] btn : BUTTON_MAP) {
+                boolean wasDown = (savedBS & btn[0]) != 0;
+                boolean isDown  = (currentBS & btn[0]) != 0;
+                if (wasDown != isDown)
+                    Native.nativeSendMouseButton(btn[1], isDown);
+            }
+            savedBS = currentBS;
+            return true;
+        });
 
         root.setOnApplyWindowInsetsListener((v, insets) -> {
             // When the IME hides by any means (toggle, system back, or the IME's
@@ -750,6 +798,46 @@ public class MainActivity extends Activity
         return super.onGenericMotionEvent(event);
     }
 
+    // Hardware keyboards (USB/Bluetooth/DeX) get routed into the hidden
+    // SystemIME input view and swallowed before Activity.onKeyDown fires.
+    // Grab them at dispatch time, before view-hierarchy delivery. Soft-IME
+    // and the in-app virtual keyboard never pass through here as KeyEvents,
+    // so only real keyboards are affected.
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        android.view.InputDevice dev = event.getDevice();
+        boolean hardwareKeyboard = dev != null && !dev.isVirtual()
+                && dev.getKeyboardType() == android.view.InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+        if (!hardwareKeyboard)
+            return super.dispatchKeyEvent(event);
+
+        // Preserve special bindings (IME-toggle bound key, Back behaviour)
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        int boundKeycode = prefs.getInt(KEY_BOUND_KEYCODE, -1);
+        int keyCode = event.getKeyCode();
+        if (keyCode == boundKeycode || keyCode == KeyEvent.KEYCODE_BACK)
+            return super.dispatchKeyEvent(event);
+
+        if (event.getRepeatCount() > 0)
+            return true;
+        if (event.getAction() != KeyEvent.ACTION_DOWN
+                && event.getAction() != KeyEvent.ACTION_UP)
+            return true;
+
+        int state = (event.getAction() == KeyEvent.ACTION_DOWN) ? 0 : 1;
+        int scanCode = event.getScanCode();
+        if (scanCode != 0) {
+            Native.nativeSendKey(state, scanCode);
+            return true;
+        }
+        int evdev = KeyCodeMapper.getScanCode(keyCode);
+        if (evdev != -1) {
+            Native.nativeSendKey(state, evdev);
+            return true;
+        }
+        return true;
+    }
+
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (event.getRepeatCount() > 0)
@@ -850,6 +938,26 @@ public class MainActivity extends Activity
 
     private int savedBS = 0;
 
+    private void capturePointer() {
+        if (pointerCaptured)
+            return;
+        // Seed the virtual position mid-screen so the first delta is sane.
+        float w = (customScreenWidth  > 0) ? customScreenWidth  : viewWidth;
+        float h = (customScreenHeight > 0) ? customScreenHeight : viewHeight;
+        capX = w / 2f;
+        capY = h / 2f;
+        surfaceView.requestFocus();
+        surfaceView.requestPointerCapture();
+        pointerCaptured = true;
+    }
+
+    private void releasePointer() {
+        if (!pointerCaptured)
+            return;
+        surfaceView.releasePointerCapture();
+        pointerCaptured = false;
+    }
+
     private static final int[][] BUTTON_MAP = {
         {MotionEvent.BUTTON_PRIMARY,   0x110}, // BTN_LEFT
         {MotionEvent.BUTTON_SECONDARY, 0x111}, // BTN_RIGHT
@@ -870,6 +978,12 @@ public class MainActivity extends Activity
     }
 
     private boolean handleMouseEvent(MotionEvent event) {
+        // First mouse click captures the pointer (DeX/hardware mice). Android
+        // auto-releases capture when the window loses focus, and we also
+        // release explicitly in onWindowFocusChanged.
+        if (!pointerCaptured && event.getButtonState() != 0)
+            capturePointer();
+
         float dx = 0f;
         float dy = 0f;
 
