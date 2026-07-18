@@ -856,6 +856,15 @@ public class MainActivity extends Activity
         if (keyCode == boundKeycode || keyCode == KeyEvent.KEYCODE_BACK)
             return super.dispatchKeyEvent(event);
 
+        // VirtualBox-style host key: while captured, Right Ctrl releases the
+        // mouse so it can leave the window (click inside to re-capture).
+        // Swallowed only while captured; otherwise it types normally.
+        if (pointerCaptured && keyCode == KeyEvent.KEYCODE_CTRL_RIGHT) {
+            if (event.getAction() == KeyEvent.ACTION_UP)
+                releasePointer();
+            return true;
+        }
+
         if (event.getRepeatCount() > 0)
             return true;
         if (event.getAction() != KeyEvent.ACTION_DOWN
@@ -986,7 +995,9 @@ public class MainActivity extends Activity
         capY = h / 2f;
         surfaceView.requestFocus();
         surfaceView.requestPointerCapture();
-        pointerCaptured = true;
+        // pointerCaptured is set by onPointerCaptureChanged only when the
+        // system actually grants capture; requests made before the window
+        // has focus fail silently, and the optimistic flag blocked retries.
     }
 
     private void releasePointer() {
