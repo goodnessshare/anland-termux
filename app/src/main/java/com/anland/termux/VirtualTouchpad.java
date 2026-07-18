@@ -1,8 +1,10 @@
 package com.anland.termux;
 
+import android.app.Activity;
 import android.content.Context;
 import android.graphics.Point;
 import android.view.MotionEvent;
+import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.WindowManager;
 
@@ -338,13 +340,33 @@ public final class VirtualTouchpad {
         return Math.max(min, Math.min(max, value));
     }
 
+    /**
+     * Update screen size: prefer the actual window size from the DecorView
+     * (correct in DeX / freeform windows); fall back to the Display size.
+     */
     private void updateScreenSize() {
-        Point size = new Point();
-        WindowManager wm = context.getSystemService(WindowManager.class);
-        if (wm != null) {
-            wm.getDefaultDisplay().getSize(size);
-            screenWidth = size.x;
-            screenHeight = size.y;
+        int w = 0, h = 0;
+
+        if (context instanceof Activity) {
+            Activity activity = (Activity) context;
+            View decorView = activity.getWindow().getDecorView();
+            if (decorView != null) {
+                w = decorView.getWidth();
+                h = decorView.getHeight();
+            }
         }
+
+        if (w <= 0 || h <= 0) {
+            Point size = new Point();
+            WindowManager wm = context.getSystemService(WindowManager.class);
+            if (wm != null) {
+                wm.getDefaultDisplay().getSize(size);
+                w = size.x;
+                h = size.y;
+            }
+        }
+
+        screenWidth = w;
+        screenHeight = h;
     }
 }
